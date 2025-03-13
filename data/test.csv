@@ -1,0 +1,2 @@
+Sentence #,Sentence,POS,Tag
+Sentence: 47592,U.S. weather forecasters say Hurricane Wilma has strengthened to a powerful category 5 storm and a key low-pressure measurement indicates it is the most powerful storm of the year .,"['NNP', 'NN', 'NNS', 'VBP', 'NNP', 'NNP', 'VBZ', 'VBN', 'TO', 'DT', 'JJ', 'NN', 'NN', 'CC', 'DT', 'JJ', 'NN', 'NN', 'VBZ', 'PRP', 'VBZ', 'DT', 'RBS', 'JJ', 'NN', 'IN', 'DT', 'NN', '.']","['B-geo', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O']"
