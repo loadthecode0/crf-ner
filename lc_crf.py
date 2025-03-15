@@ -1,5 +1,6 @@
 from utils import *
 from typing import DefaultDict, Set, List
+from collections import defaultdict
 
 class LinearChainCRF:
 
@@ -9,13 +10,13 @@ class LinearChainCRF:
         self.all_POS = set()
         self.num_feats = 0
 
-        self.pos_dict = {}
-        self.ner_dict = {}
+        self.pos_dict = defaultdict(int)
+        self.ner_dict = defaultdict(int)
         self.num_ner = 0
         self.num_pos = 0
 
 
-        self.id_funcs = []
+        # self.id_funcs = []
 
         self.obs_funcs = [
             start_cap,
@@ -27,15 +28,17 @@ class LinearChainCRF:
             'end_ing'
         ]
 
-        self.feat_funcs = []
+        # self.feat_funcs = []
 
         
 
     # def clean_text(self, text):
     #     return text.translate(str.maketrans('', '', string.punctuation))
 
-    def parse_train(self, filename:str, numlines=None) -> None:
+    def parse(self, filename:str, numlines=None):
         parsed_data = {}
+        all_NER_tags = set()
+        all_POS = set()
         i = 0
 
         with open(filename, 'r', encoding='utf-8') as file:
@@ -63,15 +66,24 @@ class LinearChainCRF:
                 # print(f'{len(ner_tags) == len(pos_tags)}')
 
                 for t in ner_tags:
-                    self.all_NER_tags.add(t)
+                    all_NER_tags.add(t)
 
                 for pos in pos_tags:
-                    self.all_POS.add(pos)
+                    all_POS.add(pos)
 
+        all_NER_tags = list(all_NER_tags)
+        all_POS = list(all_POS)
         parsed_data = pd.DataFrame(parsed_data).T
 
-        # self.all_NER_tags = set(parsed_data['Tag'])
-        # self.all_POS = set(parsed_data['POS'])
+        return parsed_data, all_NER_tags, all_POS
+
+    def parse_train(self, filename:str, numlines=None) -> None:
+        
+        parsed_data, all_NER_tags, all_POS = self.parse(filename, numlines)
+
+        self.all_NER_tags = all_NER_tags
+        self.all_POS = all_POS
+
         self.num_ner = len(self.all_NER_tags)
         self.num_pos = len(self.all_POS)
 
@@ -83,15 +95,15 @@ class LinearChainCRF:
         
         self.train_examples = parsed_data
 
-    def build_id_funcs(self) -> None:
-        for ner_tag in self.all_NER_tags:
-            f = lambda t : t == ner_tag
-            self.id_funcs.append(f)
+    # def build_id_funcs(self) -> None:
+    #     for ner_tag in self.all_NER_tags:
+    #         f = lambda t : t == ner_tag
+    #         self.id_funcs.append(f)
 
-    def build_feature_funcs(self) -> None:
-        for i in self.id_funcs:
-            for q in self.obs_funcs:
-                self.feat_funcs.append(lambda y,x : i(y)*q(x))
+    # def build_feature_funcs(self) -> None:
+    #     for i in self.id_funcs:
+    #         for q in self.obs_funcs:
+    #             self.feat_funcs.append(lambda y,x : i(y)*q(x))
 
     # def build_dataframe(self) -> None:
     #     cols = ['Sentence ID', 'Token', 'POS']
@@ -142,28 +154,33 @@ class LinearChainCRF:
         n2 = n**2
         p = self.num_pos
 
+        if y == None and t<T:
+            y = Y[t]
+        if y_ == None and t>0: 
+            y_ = Y[t-1]
+
         if t==0:
             return self.weights[self.ner_dict[y] + n2]# BOS -> y
         elif t==T:
             return self.weights[self.ner_dict[y_] + n2 + n]# y_ -> EOS, y is EOS
-        else:
+        else: 
             return self.weights[self.ner_dict[y] + n*self.ner_dict[y_]]#for general transition score
 
     def make_features(self, Y:List[str], X:List[str], pos_seq:List[str], t:int, T:int, y:str=None, y_:str=None):
         """
         Inputs:
-            y : str -> current label, y_t (hidden state)
-            y_ : str -> prev label, y_(t-1) (hidden state)
+            y : str       -> current label, y_t (hidden state)
+           y_ : str       -> prev label, y_(t-1) (hidden state)
             X : List[str] -> obs sequence (tokens list)
-            pos_seq : List[str] -> obs sequence (POS list)
-            t : int -> timestep
-            T : int -> total timesteps (length of sentence)
+      pos_seq : List[str] -> obs sequence (POS list)
+            t : int       -> timestep
+            T : int       -> total timesteps (length of sentence)
         """
 
         try:
-            if y == None and t<T:
+            if y == None and t<T :
                 y = Y[t]
-            if y_ == None and t>0: 
+            if y_ == None and t>0 : 
                 y_ = Y[t-1]
         except:
             print(T, t, X, Y, len(X), len(pos_seq), len(Y))
@@ -257,14 +274,14 @@ class LinearChainCRF:
         for i in r:
             X, pos_seq, Y = X_train[i], pos_train[i], Y_train[i]
             ll += (self.score_seq(X, pos_seq, Y) - self.forward_partition(X, pos_seq))
-        return -ll
+        return -ll/N
     
     def callback_function(self, weights):
         """Callback function to print loss during training."""
         loss = self.nll(weights, self.X_train, self.pos_train, self.Y_train)
         print(f"Current NLL Loss: {loss:.4f}")
 
-    def train(self) -> None:
+    def train(self, maxiter:int=10) -> None:
 
         # initialize weights
 
@@ -309,30 +326,176 @@ class LinearChainCRF:
         self.Y_train = Y_train
         self.pos_train = pos_train
 
-        result = minimize(self.nll, self.weights, args=(X_train, pos_train, Y_train),
-                          method='L-BFGS-B', callback=self.callback_function, options={'disp': True})
-        self.weights = result.x  # Update model parameters
+        N = len(X_train)
+        batch_size = 10 # train on 10 examples at a time
+        for i in range(0, len(X_train), batch_size):
+            m = min(i+batch_size, N)
+            batch_X, batch_pos, batch_Y = X_train[i:m], pos_train[i:m], Y_train[i:m]
+            result = minimize(
+                self.nll, 
+                self.weights, 
+                args=(batch_X, batch_pos, batch_Y), 
+                method='L-BFGS-B',
+                # callback=self.callback_function,
+                options={'maxiter': maxiter, 'ftol': 1e-3, 'gtol': 1e-3, 'disp':True}
+            )
+            self.weights = result.x  # update weights
+
+            if (i%50 == 0):
+                self.callback_function(self.weights)
+
+        # result = minimize(self.nll, self.weights, args=(X_train, pos_train, Y_train),
+        #                   method='L-BFGS-B', callback=self.callback_function, options={'disp': True, 'maxiter':maxiter})
+        # self.weights = result.x  # Update model parameters
 
 
-    def fit(self, filename:str, numlines:int=None, show_tqdm:bool=False) -> None:
+    def fit(self, filename:str, numlines:int=None, show_tqdm:bool=False, maxiter:int=10) -> None:
         self.parse_train(filename=filename, numlines=numlines)
-        self.build_id_funcs()
-        self.build_feature_funcs()
+        # self.build_id_funcs()
+        # self.build_feature_funcs()
         # self.build_dataframe()
         self.use_tqdm = show_tqdm
-        self.train()
+        self.train(maxiter)
 
     
 
-    def viterbi(self, obs:List[str]) -> List[str]:
-        pass
+    def predict_viterbi(self, obs:List[str], pos_seq:List[str]) -> List[str]:
+        T = len(obs)
+        n = self.num_ner
+        n2 = n**2
+        p = self.num_pos
+        o = len(self.obs_funcs)
 
+        dp = np.full((T+1, n+1), -np.inf)
+        trace = np.zeros((T+1, n+1))
+
+        for y in self.all_NER_tags:
+            j = self.ner_dict[y]
+            dp[0][j] = self.transition_score([], obs, pos_seq, 0, T, y=y) + self.emission_score([], obs, pos_seq, 0, T, y=y)
+            # dp[0][j] = self.weights[n2 + j] + self.
+
+        for t in range(1, T): # goes till T-1, ie before EOS
+            for y in self.all_NER_tags:
+                j = self.ner_dict[y]
+
+                best = -np.inf
+                back = 0
+
+                for y_ in self.all_NER_tags:
+                    j_ = self.ner_dict[y_]
+
+                    new_score = dp[t-1][j_] + self.emission_score([], obs, pos_seq, t, T, y=y) + self.transition_score([],obs,pos_seq, t, T, y=y, y_=y_)
+                    if new_score > best:
+                        best = new_score
+                        back = j_
+
+                dp[t][j] = best
+                trace[t][j] = back
+
+         #nth = EOS
+        for y_ in self.all_NER_tags:
+            j_ = self.ner_dict[y_]
+
+            new_score = dp[T-1][j_] + self.transition_score([],obs,pos_seq, t, T, y=y, y_=y_)
+            if new_score > best:
+                best = new_score
+                back = j_
+
+        dp[T][n] = best
+        trace[T][n] = back
+
+        pred_labels = []
+        t = T-1
+        j = n
+        # j = int(trace[T][n])
+
+        while t>=0:
+            try:
+                j = int(trace[t][j])
+                pred_labels = [self.all_NER_tags[j]] + pred_labels
+                t -= 1
+            except:
+                print(f"Error at index {t, j}")
+                print(f"--> {self.all_NER_tags[j]}")
+
+        return pred_labels[::-1] # reversed
+
+    def eval(self, Y_pred:List[List[str]], Y_test:List[List[str]]):
+        assert len(Y_test) == len(Y_pred), "Mismatch in number of labels"
+        print(f"{len(Y_test), len(Y_pred)}")
+        # Flatten the lists
+        # N = len(Y_test)
+        # for i in range(N):
+        #     print(i)
+        #     print (Y_test[i])
+        #     print(Y_pred[i])
+        Y_test = [label for sentence in Y_test for label in sentence]
+        Y_pred = [label for sentence in Y_pred for label in sentence]
+
+        assert len(Y_test) == len(Y_pred), f"Mismatch in number of labels, {len(Y_test), len(Y_pred)}"
+        print(f"{len(Y_test), len(Y_pred)}")
+        unique_labels = set(Y_test) | set(Y_pred)
+        label_counts = {label: {'TP': 0, 'FP': 0, 'FN': 0} for label in unique_labels}
+        
+        for true, pred in zip(Y_test, Y_pred):
+            if true == pred:
+                label_counts[true]['TP'] += 1
+            else:
+                label_counts[pred]['FP'] += 1
+                label_counts[true]['FN'] += 1
+        
+        precision, recall, f1_score = {}, {}, {}
+        for label, counts in label_counts.items():
+            tp, fp, fn = counts['TP'], counts['FP'], counts['FN']
+            precision[label] = tp / (tp + fp) if (tp + fp) > 0 else 0
+            recall[label] = tp / (tp + fn) if (tp + fn) > 0 else 0
+            f1_score[label] = (2 * precision[label] * recall[label]) / (precision[label] + recall[label]) if (precision[label] + recall[label]) > 0 else 0
+        
+        accuracy = sum(counts['TP'] for counts in label_counts.values()) / len(Y_test)
+        
+        print(f"Accuracy: {accuracy:.4f}")
+        print("Label-wise Precision, Recall, F1-Score:")
+        for label in unique_labels:
+            print(f"Label: {label}, Precision: {precision[label]:.4f}, Recall: {recall[label]:.4f}, F1-Score: {f1_score[label]:.4f}")
+        
+        return accuracy, precision, recall, f1_score
+
+    def eval_from_file(self, filename:str, numlines:int = None)->None:
+        
+        parsed_data, _, _ = self.parse(filename=filename, numlines=numlines)
+
+        X_test = parsed_data['Tokens'].tolist()
+        pos_test = parsed_data['POS'].tolist()
+        Y_test = parsed_data['NER_tags'].tolist()
+
+        N = len(X_test)
+
+        Y_pred = []
+        for i in range(0, N):
+            Y_pred.append(self.predict_viterbi(X_test[i], pos_test[i]))
+
+        self.eval(Y_pred=Y_pred, Y_test=Y_test)
+
+def save_crf_model(crf_model, extra:str):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"crf_{timestamp}_{extra}.pkl"
+    with open(filename, 'wb') as file:
+        pickle.dump(crf_model, file)
+    print(f"CRF model saved to {filename}")
+
+def load_crf_model(filename):
+    """Load trained CRF model from file."""
+    with open(filename, 'rb') as file:
+        crf_model = pickle.load(file)
+    print(f"CRF model loaded from {filename}")
+    return crf_model
 
 def test():
     print(end_ing('HiAll'))
     print(end_ing('yooooing'))
     c = LinearChainCRF()
-    c.fit('data/ner_train.csv', numlines=10, show_tqdm=False)
+    c.fit('data/ner_train.csv', show_tqdm=False, maxiter=3)
+    save_crf_model(c, '1st')
     # print(c.train_examples[28389])
     print(c.all_NER_tags)
     print(c.all_POS)
@@ -340,7 +503,8 @@ def test():
     print(c.train_examples.columns)
     print(c.pos_dict)
     print(c.ner_dict)
-
+    # print(c.predict_viterbi(['Indian', 'troops', 'shot', 'dead', 'three', 'militants', 'in', 'Doda', 'district', 'Wednesday', '.'], ['JJ', 'NNS', 'VBD', 'JJ', 'CD', 'NNS', 'IN', 'NNP', 'NN', 'NNP', '.']))
+    c.eval_from_file('data/ner_test.csv')
 if __name__ == "__main__":
     test()
         

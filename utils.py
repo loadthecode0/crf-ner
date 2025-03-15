@@ -5,7 +5,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import re, csv, string
 from tqdm import tqdm
-
+import pickle
+import datetime
 
 def start_cap(word: str) -> bool:
     return word[:1].isupper()
