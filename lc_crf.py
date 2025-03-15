@@ -79,7 +79,7 @@ class LinearChainCRF:
 
     def parse_train(self, filename:str, numlines=None) -> None:
         
-        parsed_data, all_NER_tags, all_POS = self.parse(filename, numlines)
+        parsed_data, all_NER_tags, all_POS = parse(filename, numlines)
 
         self.all_NER_tags = all_NER_tags
         self.all_POS = all_POS
@@ -462,7 +462,7 @@ class LinearChainCRF:
 
     def eval_from_file(self, filename:str, numlines:int = None)->None:
         
-        parsed_data, _, _ = self.parse(filename=filename, numlines=numlines)
+        parsed_data, _, _ = parse(filename=filename, numlines=numlines)
 
         X_test = parsed_data['Tokens'].tolist()
         pos_test = parsed_data['POS'].tolist()
