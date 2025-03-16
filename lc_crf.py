@@ -180,6 +180,7 @@ class LinearChainCRF:
         n = self.num_ner
         n2 = n**2
         p = self.num_pos
+        n_p = n*p
 
         if t==0: 
             feats[self.ner_dict[y] + n2] = 1.0 # BOS -> y
@@ -664,7 +665,7 @@ def test():
     print(end_ing('yooooing'))
     c = LinearChainCRF()
     c.fit('data/ner_train.csv', batchsize= 50, numlines=50, show_tqdm=False, maxiter=10)
-    # save_crf_model(c, '1st')
+    # save_crf_model(c, 'em_cond')
     # print(c.train_examples[28389])
     print(c.all_NER_tags)
     print(c.all_POS)
