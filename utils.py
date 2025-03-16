@@ -7,12 +7,35 @@ import re, csv, string
 from tqdm import tqdm
 import pickle
 import datetime
+from itertools import starmap
 
-def start_cap(word: str) -> bool:
-    return word[:1].isupper()
+def start_cap(token: str, curr_pos=None, t=None, T=None, y=None, y_=None) -> bool:
+    return token[:1].isupper()
 
-def end_ing(word: str) -> bool:
-    return word[-3:] == 'ing'
+def end_ing(token: str, curr_pos=None, t=None, T=None, y=None, y_=None) -> bool:
+    return token[-3:] == 'ing'
+
+def is_punct(token: str, curr_pos=None, t=None, T=None, y=None, y_=None) -> bool:
+    return token in ['.', ',', '``', '`', ':', '$']
+
+def is_digit(token: str, curr_pos=None, t=None, T=None, y=None, y_=None) -> bool:
+    return token.isdigit()
+
+def is_start(token: str, curr_pos=None, t=None, T=None, y=None, y_=None) -> bool:
+    return t==0
+
+def is_end(token: str, curr_pos=None, t=None, T=None, y=None, y_=None) -> bool:
+    return t==T-1
+
+
+obs_funcs = [
+    start_cap,
+    end_ing,
+    is_punct,
+    is_digit,
+    is_start,
+    is_end
+]
 
 def parse(filename:str, numlines=None):
     parsed_data = {}

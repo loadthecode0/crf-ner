@@ -1,7 +1,7 @@
 from utils import *
 from typing import DefaultDict, Set, List
 from collections import defaultdict
-
+from joblib import Parallel, delayed
 class LinearChainCRF:
 
     def __init__(self):
@@ -18,64 +18,19 @@ class LinearChainCRF:
 
         # self.id_funcs = []
 
-        self.obs_funcs = [
-            start_cap,
-            end_ing
-        ]
+        # self.obs_funcs = [
+        #     start_cap,
+        #     end_ing
+        # ]
 
-        self.obs_feat_names = [
-            'start_cap',
-            'end_ing'
-        ]
+        self.obs_funcs = obs_funcs #imported from utils.py 
+
+        # self.obs_feat_names = [
+        #     'start_cap',
+        #     'end_ing'
+        # ]
 
         # self.feat_funcs = []
-
-        
-
-    # def clean_text(self, text):
-    #     return text.translate(str.maketrans('', '', string.punctuation))
-
-    def parse(self, filename:str, numlines=None):
-        parsed_data = {}
-        all_NER_tags = set()
-        all_POS = set()
-        i = 0
-
-        with open(filename, 'r', encoding='utf-8') as file:
-            reader = csv.DictReader(file)
-            
-            for row in reader:
-                i+=1
-                if (i==numlines): break
-                match = re.match(r'Sentence: (\d+)', row['Sentence #'])
-                sentence_id = int(match.group(1)) if match else None
-                words = row['Sentence'].split()
-                pos_tags = eval(row['POS'])  # convert POS tags string to list
-                ner_tags = eval(row['Tag'])  # convert NER tags string to list
-
-                if (len(words) != len(pos_tags)) or (len(ner_tags) != len(pos_tags)) or ((len(words) != len(ner_tags))):
-                    print(len(words), len(pos_tags), len(ner_tags))
-                else:
-                    if sentence_id not in parsed_data:
-                        parsed_data[sentence_id] = {"Tokens": [], "POS": [], "NER_tags": []}
-                        
-                    parsed_data[sentence_id]["Tokens"].extend(words)
-                    parsed_data[sentence_id]["POS"].extend(pos_tags)
-                    parsed_data[sentence_id]["NER_tags"].extend(ner_tags)
-
-                # print(f'{len(ner_tags) == len(pos_tags)}')
-
-                for t in ner_tags:
-                    all_NER_tags.add(t)
-
-                for pos in pos_tags:
-                    all_POS.add(pos)
-
-        all_NER_tags = list(all_NER_tags)
-        all_POS = list(all_POS)
-        parsed_data = pd.DataFrame(parsed_data).T
-
-        return parsed_data, all_NER_tags, all_POS
 
     def parse_train(self, filename:str, numlines=None) -> None:
         
@@ -127,10 +82,11 @@ class LinearChainCRF:
 
     #     print(self.data.head(n=25))
 
-    def emission_score(self, Y:List[str], X:List[str], pos_seq:List[str], t:int, T:int, y:str=None) -> np.float16:
+    def emission_score(self, Y:List[str]=None, X:List[str]=None, pos_seq:List[str]=None, t:int=None, T:int=None, y:str=None, y_:str=None) -> np.float16:
         
         """
         calculates the emission log prob (which includes POS given NER tag, and binary obs functions)
+        if t==T, it means the sentence ended, and there is 0 contribution to score in log space (1 prob of EOS emission)
         """
 
         em = 0.0
@@ -139,21 +95,34 @@ class LinearChainCRF:
         p = self.num_pos
 
         if t < T:
-            em += self.weights[n2 + 2*n + self.pos_dict[pos_seq[t]]] # for current pos
 
-            # loopify this pls
-            curr_token = X[t]
-            em += self.weights[n2 + 2*n + p + 0]*self.obs_funcs[0](curr_token)
-            em += self.weights[n2 + 2*n + p + 1]*self.obs_funcs[1](curr_token)
+            em_wts = self.weights[n2 + 2*n + p :]
+
+            args = (X[t], pos_seq[t], t, T, y, y_)
+            em_feats = [f(*args) for f in self.obs_funcs]
+
+            # print(f'\tt=\t{t}, em_feats={em_feats}')
+        
+            # score from only POS
+            em += self.weights[n2 + 2*n + self.pos_dict[pos_seq[t]]] # for current pos -> right now, not conditioned on y
+
+            # # loopify this pls
+            # curr_token = X[t]
+            # em += self.weights[n2 + 2*n + p + 0]*self.obs_funcs[0](curr_token)
+            # em += self.weights[n2 + 2*n + p + 1]*self.obs_funcs[1](curr_token)
+
+            # score from other obs functions
+            em += np.dot(em_wts, em_feats)
 
         return em
     
-    def transition_score(self, Y:List[str], X:List[str], pos_seq:List[str], t:int, T:int, y:str=None, y_:str=None) -> np.float16:
+    def transition_score(self, Y:List[str]=None, t:int=None, T:int=None, y:str=None, y_:str=None) -> np.float16:
         idx = 0
         n = self.num_ner
         n2 = n**2
         p = self.num_pos
 
+        # only if y and y_ are not specified
         if y == None and t<T:
             y = Y[t]
         if y_ == None and t>0: 
@@ -177,8 +146,8 @@ class LinearChainCRF:
             T : int       -> total timesteps (length of sentence)
         """
 
-        try:
-            if y == None and t<T :
+        try: # when y, y_ are not given explicity
+            if y == None and t<T : 
                 y = Y[t]
             if y_ == None and t>0 : 
                 y_ = Y[t-1]
@@ -191,14 +160,14 @@ class LinearChainCRF:
         n2 = n**2
         p = self.num_pos
 
-        if t==0:
+        if t==0: 
             feats[self.ner_dict[y] + n2] = 1.0 # BOS -> y
         elif t==T:
             feats[self.ner_dict[y_] + n2 + n] = 1.0 # y_ -> EOS, y is EOS
         else:
             feats[self.ner_dict[y] + n*self.ner_dict[y_]] = 1.0 #for transition score
         
-        if t < T:
+        if t < T: #pos tag only for valid timesteps, otherwise index error
             feats[n2 + 2*n + self.pos_dict[pos_seq[t]]] = 1.0 # for current pos
 
             # loopify this pls
@@ -221,7 +190,13 @@ class LinearChainCRF:
         score_X_Y = 0.0
 
         for t in range(0, T+1):
-            score_X_Y += np.dot(self.weights, self.make_features(Y, X, pos_seq, t, T))
+            # score_X_Y += np.dot(self.weights, self.make_features(Y, X, pos_seq, t, T))
+            score_X_Y += \
+                self.transition_score(Y, t, T) + \
+                self.emission_score(Y, X, pos_seq, t, T)
+            
+
+            # print(f"t=\t{t} ---> + {self.transition_score(Y, t, T)} + {self.emission_score(Y, X, pos_seq, t, T)}")
 
         # print(score_X_Y)
         return score_X_Y
@@ -236,9 +211,9 @@ class LinearChainCRF:
         dp = np.zeros((T+1, n+1)) 
 
         for y in self.all_NER_tags:
-            j = self.ner_dict[y]
-            dp[0][j] = np.dot(self.weights, self.make_features([y], X, pos_seq, 0, T))
-            # dp[0][j] = self.weights[n2 + j] + self.
+            j = self.ner_dict[y] # get index of curr NER label
+            # only BOS -> y transitions, no need to consider logaddexp
+            dp[0][j] = self.transition_score(y=y, t=0, T=T) + self.emission_score(X=X, pos_seq=pos_seq, t=0, T=T, y=y, y_=None)
 
         for t in range(1, T): # goes till T-1, ie before EOS
             for y in self.all_NER_tags:
@@ -246,42 +221,112 @@ class LinearChainCRF:
 
                 dp[t][j] = \
                 np.logaddexp.reduce([
-                    dp[t-1][self.ner_dict[y_]] + self.emission_score([], X, pos_seq, t, T, y=y) +
-                    self.transition_score([],X,pos_seq, t, T, y=y, y_=y_)
+                    dp[t-1][self.ner_dict[y_]] + \
+                    self.transition_score(t=t, T=T, y=y, y_=y_) + \
+                    self.emission_score(X=X, pos_seq=pos_seq, t=t, T=T, y=y, y_=None) 
                     for y_ in self.all_NER_tags
                 ])
 
-         #nth = EOS
-        dp[T][n] = np.logaddexp.reduce([dp[T-1][self.ner_dict[y_]] + self.transition_score([], X, pos_seq, T, T, y_=y_) for y_ in self.all_NER_tags ])
+        #nth label = EOS (y_ -> EOS)
+        dp[T][n] = np.logaddexp.reduce([
+            dp[T-1][self.ner_dict[y_]] + \
+            self.transition_score(t=T, T=T, y_=y_) 
+            for y_ in self.all_NER_tags ])
 
         return dp[T][n]
-        # for y_ in self.all_NER_tags:
-        #     j_ = self.ner_dict[y_]
-        #     dp[T][n] = np.dot(self.weights, self.make_features([y], X, pos_seq, 0, T)) 
-                # dp[t][j] = self.emission_score([], X, pos_seq, t, T, y=y)
-                # for y_ in self.all_NER_tags:
-                #     j_ = self.ner_dict[y_]
-                #     dp[t][j] += dp[t-1][j_] + self.transition_score([],X,pos_seq, t, T, y=y, y_=y_)
-    def nll(self, W, X_train:List[List[str]], pos_train:List[List[str]], Y_train:List[List[str]]) -> np.float16:
+    
+    # def nll(self, W, X_train: List[List[str]], pos_train: List[List[str]], Y_train: List[List[str]], reg_lambda=0.1) -> float:
+    #     """Negative Log-Likelihood with Parallel Processing"""
+    #     self.weights = W
+    #     N = len(X_train)
+
+    #     def compute_log_likelihood(i):
+    #         X, pos_seq, Y = X_train[i], pos_train[i], Y_train[i]
+    #         return self.score_seq(X, pos_seq, Y) - self.forward_partition(X, pos_seq)
+
+    #     r = range(0,N)
+    #     if self.use_tqdm:
+    #         r = tqdm(r)
+    #     # parallel computation
+    #     ll_values = Parallel(n_jobs=-1)(delayed(compute_log_likelihood)(i) for i in r)
+
+    #     # mean
+    #     n = self.num_ner
+    #     num_trans_wts = n**2 + 2*n
+    #     return (-sum(ll_values) / N) + reg_lambda * np.sum(self.weights[:num_trans_wts]**2)
+
+
+    def nll(self, W, X_train: List[List[str]], pos_train: List[List[str]], Y_train: List[List[str]], 
+            reg_lambda=0.5, O_penalty=0.75, entity_boost=1.5) -> float:
+        """Negative Log-Likelihood with Weighted Loss (Prevents 'O' Overprediction)"""
         self.weights = W
-        ll = 0.0
         N = len(X_train)
 
-        r = range(0,N)
+        def compute_log_likelihood(i):
+            """Computes sequence score while applying weighted penalties for 'O' and entity labels."""
+            X, pos_seq, Y = X_train[i], pos_train[i], Y_train[i]
+
+            # Compute sequence score
+            seq_score = self.score_seq(X, pos_seq, Y)
+            log_partition = self.forward_partition(X, pos_seq)
+
+            # Adjust 'O' and entity label influence
+            for label in Y:
+                if label == "O":
+                    seq_score += O_penalty  # Reduce 'O' impact
+                else:
+                    seq_score *= entity_boost  # Boost entity learning
+
+            return seq_score - log_partition
+
+        # Use tqdm for progress bar
+        r = range(0, N)
         if self.use_tqdm:
             r = tqdm(r)
 
-        for i in r:
+        # Parallel computation
+        ll_values = Parallel(n_jobs=-1)(delayed(compute_log_likelihood)(i) for i in r)
+
+        # Compute negative log-likelihood + L2 regularization
+        n = self.num_ner
+        num_trans_wts = n**2 + 2*n
+        return (-sum(ll_values) / N) + reg_lambda * np.sum(self.weights**2)
+
+    def compute_gradient(self, W, X_train, pos_train, Y_train, reg_lambda=0.5):
+        """Computes the gradient of the Negative Log-Likelihood (Jacobian)"""
+        self.weights = W  # Update weights
+        N = len(X_train)
+        gradient = np.zeros_like(W)
+
+        def compute_per_sequence_gradient(i):
+            """Computes the gradient for a single training sequence"""
             X, pos_seq, Y = X_train[i], pos_train[i], Y_train[i]
-            ll += (self.score_seq(X, pos_seq, Y) - self.forward_partition(X, pos_seq))
-        return -ll/N
-    
+
+            # Compute feature expectations
+            observed_features = self.feature_counts(X, pos_seq, Y)
+            expected_features = self.expected_feature_counts(X, pos_seq)
+
+            # Compute per-sequence gradient
+            return observed_features - expected_features
+
+        # Parallel computation
+        gradients = Parallel(n_jobs=-1)(delayed(compute_per_sequence_gradient)(i) for i in range(N))
+
+        # Aggregate gradients over all sequences
+        for g in gradients:
+            gradient += g
+
+        # Apply L2 Regularization
+        gradient += 2 * reg_lambda * self.weights
+
+        return -gradient / N  # Negative gradient for minimization
+
     def callback_function(self, weights):
         """Callback function to print loss during training."""
         loss = self.nll(weights, self.X_train, self.pos_train, self.Y_train)
-        print(f"Current NLL Loss: {loss:.4f}")
+        print(f"Current NLL Loss: {loss:.4f}, ||W|| = {np.sqrt(np.sum(self.weights**2))}")
 
-    def train(self, maxiter:int=10) -> None:
+    def train(self, batchsize:int=50, maxiter:int=10, use_dummy_wts:bool=False, dummy_wts=None, train:bool=True) -> None:
 
         # initialize weights
 
@@ -292,10 +337,18 @@ class LinearChainCRF:
         # fourth set of wights is for miscellaneous obs funcs - [n*n + 2n + p, n*n + 2n + p + o - 1]
         mu = 0.0
         sigma = 0.01
-        self.weights = sigma*np.random.randn(self.num_feats) + np.array([mu]*self.num_feats)
 
+        if not use_dummy_wts:
+            self.weights = sigma*np.random.randn(self.num_feats) + np.array([mu]*self.num_feats)
+        else:
+            self.weights = dummy_wts
         print(self.num_feats)
         print(self.weights)
+
+
+        if not train: 
+            print(f'not training')
+            return
 
         # plt.hist(self.weights, bins=10, edgecolor='black', alpha=0.7)
         # plt.xlabel('Value')
@@ -317,9 +370,9 @@ class LinearChainCRF:
         pos_train = self.train_examples['POS'].tolist()
         Y_train = self.train_examples['NER_tags'].tolist()
 
-        print(X_train)
-        print(pos_train)
-        print(Y_train)
+        # print(X_train)
+        # print(pos_train)
+        # print(Y_train)
 
         """ Train using L-BFGS optimizer """
         self.X_train = X_train
@@ -327,7 +380,7 @@ class LinearChainCRF:
         self.pos_train = pos_train
 
         N = len(X_train)
-        batch_size = 10 # train on 10 examples at a time
+        batch_size = batchsize # train on 10 examples at a time
         for i in range(0, len(X_train), batch_size):
             m = min(i+batch_size, N)
             batch_X, batch_pos, batch_Y = X_train[i:m], pos_train[i:m], Y_train[i:m]
@@ -336,26 +389,27 @@ class LinearChainCRF:
                 self.weights, 
                 args=(batch_X, batch_pos, batch_Y), 
                 method='L-BFGS-B',
-                # callback=self.callback_function,
-                options={'maxiter': maxiter, 'ftol': 1e-3, 'gtol': 1e-3, 'disp':True}
+                callback=self.callback_function,
+                options={'maxiter': maxiter, 'disp':True}
             )
             self.weights = result.x  # update weights
 
-            if (i%50 == 0):
-                self.callback_function(self.weights)
+            # if (i%50 == 0):
+            #     self.callback_function(self.weights)
 
         # result = minimize(self.nll, self.weights, args=(X_train, pos_train, Y_train),
         #                   method='L-BFGS-B', callback=self.callback_function, options={'disp': True, 'maxiter':maxiter})
         # self.weights = result.x  # Update model parameters
+        print(self.weights)
 
 
-    def fit(self, filename:str, numlines:int=None, show_tqdm:bool=False, maxiter:int=10) -> None:
+    def fit(self, filename:str, numlines:int=None, batchsize:int=None, show_tqdm:bool=False, maxiter:int=10, train:bool=True) -> None:
         self.parse_train(filename=filename, numlines=numlines)
         # self.build_id_funcs()
         # self.build_feature_funcs()
         # self.build_dataframe()
         self.use_tqdm = show_tqdm
-        self.train(maxiter)
+        self.train(batchsize, maxiter, train=train)
 
     
 
@@ -371,8 +425,10 @@ class LinearChainCRF:
 
         for y in self.all_NER_tags:
             j = self.ner_dict[y]
-            dp[0][j] = self.transition_score([], obs, pos_seq, 0, T, y=y) + self.emission_score([], obs, pos_seq, 0, T, y=y)
-            # dp[0][j] = self.weights[n2 + j] + self.
+            # print(f't=0')
+            # print(f'Checking y={j} and y_=BOS')
+            dp[0][j] = self.transition_score(y=y, t=0, T=T) + self.emission_score(X=obs, pos_seq=pos_seq, t=0, T=T, y=y, y_=None)
+
 
         for t in range(1, T): # goes till T-1, ie before EOS
             for y in self.all_NER_tags:
@@ -381,10 +437,16 @@ class LinearChainCRF:
                 best = -np.inf
                 back = 0
 
+                # print(f't={t}')
                 for y_ in self.all_NER_tags:
                     j_ = self.ner_dict[y_]
 
-                    new_score = dp[t-1][j_] + self.emission_score([], obs, pos_seq, t, T, y=y) + self.transition_score([],obs,pos_seq, t, T, y=y, y_=y_)
+                    # new_score = dp[t-1][j_] + self.emission_score([], obs, pos_seq, t, T, y=y) + self.transition_score([],obs,pos_seq, t, T, y=y, y_=y_)
+                    # print(f'> Checking y={j} and y_={y_}')
+                    new_score = dp[t-1][j_] + \
+                        self.transition_score(t=t, T=T, y=y, y_=y_) + \
+                        self.emission_score(X=obs, pos_seq=pos_seq, t=t, T=T, y=y, y_=None) 
+                    # print(f'> new_score = {new_score}')
                     if new_score > best:
                         best = new_score
                         back = j_
@@ -392,27 +454,31 @@ class LinearChainCRF:
                 dp[t][j] = best
                 trace[t][j] = back
 
+                # print(f'Viterbi for t={t}, y={y}, j={j}, {dp[t][j]}, trace={trace[t][j]} -> {self.all_NER_tags[int(trace[t][j])]}')
+
          #nth = EOS
+        # print(f't={t}')
         for y_ in self.all_NER_tags:
             j_ = self.ner_dict[y_]
 
-            new_score = dp[T-1][j_] + self.transition_score([],obs,pos_seq, t, T, y=y, y_=y_)
+            new_score = dp[T-1][j_] + self.transition_score(t=T, T=T, y_=y_) 
             if new_score > best:
                 best = new_score
                 back = j_
 
         dp[T][n] = best
         trace[T][n] = back
+        # print(f'Viterbi for t={T}, y=EOS, j={n}, {dp[T][n]}, trace={trace[T][n]} -> {self.all_NER_tags[int(trace[T][n])]}')
 
         pred_labels = []
-        t = T-1
+        t = T
         j = n
         # j = int(trace[T][n])
 
-        while t>=0:
+        while t>0:
             try:
                 j = int(trace[t][j])
-                pred_labels = [self.all_NER_tags[j]] + pred_labels
+                pred_labels.append(self.all_NER_tags[j])
                 t -= 1
             except:
                 print(f"Error at index {t, j}")
@@ -472,7 +538,9 @@ class LinearChainCRF:
 
         Y_pred = []
         for i in range(0, N):
-            Y_pred.append(self.predict_viterbi(X_test[i], pos_test[i]))
+            y_pred = self.predict_viterbi(X_test[i], pos_test[i])
+            Y_pred.append(y_pred)
+            print(y_pred,'\n', Y_test[i], '\n\n')
 
         self.eval(Y_pred=Y_pred, Y_test=Y_test)
 
@@ -494,8 +562,8 @@ def test():
     print(end_ing('HiAll'))
     print(end_ing('yooooing'))
     c = LinearChainCRF()
-    c.fit('data/ner_train.csv', show_tqdm=False, maxiter=3)
-    save_crf_model(c, '1st')
+    c.fit('data/ner_train.csv', batchsize= 50, numlines=50, show_tqdm=False, maxiter=10)
+    # save_crf_model(c, '1st')
     # print(c.train_examples[28389])
     print(c.all_NER_tags)
     print(c.all_POS)
@@ -504,7 +572,7 @@ def test():
     print(c.pos_dict)
     print(c.ner_dict)
     # print(c.predict_viterbi(['Indian', 'troops', 'shot', 'dead', 'three', 'militants', 'in', 'Doda', 'district', 'Wednesday', '.'], ['JJ', 'NNS', 'VBD', 'JJ', 'CD', 'NNS', 'IN', 'NNP', 'NN', 'NNP', '.']))
-    c.eval_from_file('data/ner_test.csv')
+    c.eval_from_file('data/ner_test.csv', numlines=10)
 if __name__ == "__main__":
     test()
         
