@@ -25,10 +25,14 @@ class LinearChainCRF:
 
         self.obs_funcs = obs_funcs #imported from utils.py 
 
-        # self.obs_feat_names = [
-        #     'start_cap',
-        #     'end_ing'
-        # ]
+        self.obs_feat_names = [
+            'start_cap',
+            'end_ing',
+            'is_punct',
+            'is_digit',
+            'is_start',
+            'is_end'
+        ]
 
         # self.feat_funcs = []
 
@@ -116,7 +120,8 @@ class LinearChainCRF:
 
         return em
     
-    def transition_score(self, Y:List[str]=None, t:int=None, T:int=None, y:str=None, y_:str=None) -> np.float16:
+    def transition_score(self, Y:List[str]=None, t:int=None, T:int=None, y:str=None, 
+                         y_:str=None, O_penalty=0.5, entity_boost=1.5, reg_weight=4.0) -> np.float16:
         idx = 0
         n = self.num_ner
         n2 = n**2
@@ -129,11 +134,23 @@ class LinearChainCRF:
             y_ = Y[t-1]
 
         if t==0:
-            return self.weights[self.ner_dict[y] + n2]# BOS -> y
+            base = self.weights[self.ner_dict[y] + n2]# BOS -> y
         elif t==T:
-            return self.weights[self.ner_dict[y_] + n2 + n]# y_ -> EOS, y is EOS
+            base =  self.weights[self.ner_dict[y_] + n2 + n]# y_ -> EOS, y is EOS
         else: 
-            return self.weights[self.ner_dict[y] + n*self.ner_dict[y_]]#for general transition score
+            base = self.weights[self.ner_dict[y] + n*self.ner_dict[y_]]#for general transition score
+
+        # # Apply O->O penalty using regularization scaling
+        # if y_ == "O" and y == "O":
+        #     base += reg_weight * abs(np.log(O_penalty))  # Strong penalization of O->O
+
+        # # Boost O->B-* transitions
+        # elif y_ == "O" and y is not None and y.startswith("B-"):
+        #     base -= reg_weight * np.log(entity_boost)  # Encourage O->Entity transitions
+        if t<T:
+            base *= self.class_weights[y]
+
+        return base
 
     def make_features(self, Y:List[str], X:List[str], pos_seq:List[str], t:int, T:int, y:str=None, y_:str=None):
         """
@@ -193,7 +210,10 @@ class LinearChainCRF:
             # score_X_Y += np.dot(self.weights, self.make_features(Y, X, pos_seq, t, T))
             score_X_Y += \
                 self.transition_score(Y, t, T) + \
-                self.emission_score(Y, X, pos_seq, t, T)
+                self.emission_score(Y, X, pos_seq, t, T) 
+                
+            # if t<T:
+            #     score_X_Y *= self.class_weights[Y[t]]
             
 
             # print(f"t=\t{t} ---> + {self.transition_score(Y, t, T)} + {self.emission_score(Y, X, pos_seq, t, T)}")
@@ -233,7 +253,50 @@ class LinearChainCRF:
             self.transition_score(t=T, T=T, y_=y_) 
             for y_ in self.all_NER_tags ])
 
-        return dp[T][n]
+        return dp[T][n], dp
+    
+
+    def backward_partition(self, X: List[str], pos_seq: List[str]) -> np.float16:
+        """
+        Computes the Backward Algorithm for CRF.
+        Returns log Z(X) using dynamic programming.
+        """
+
+        T = len(X)  # Sequence length
+        n = self.num_ner  # Number of NER labels
+        n2 = n**2  # Total transition weights
+        p = self.num_pos  # Number of POS tags
+        o = len(self.obs_funcs)  # Number of observation features
+
+        # Initialize DP table
+        dp = np.zeros((T+1, n+1))  # (T+1) x (n+1) matrix
+
+        # Base case: EOS (end of sentence)
+        for y in self.all_NER_tags:
+            j = self.ner_dict[y]
+            dp[T][j] = self.transition_score(t=T, T=T, y_=y)  # Transition to EOS
+
+        # Recursively compute backward probabilities
+        for t in reversed(range(T)):  # Iterate from T-1 down to 0
+            for y in self.all_NER_tags:
+                j = self.ner_dict[y]
+
+                dp[t][j] = np.logaddexp.reduce([
+                    dp[t+1][self.ner_dict[y_next]] +  # Next step probability
+                    self.transition_score(t=t+1, T=T, y=y_next, y_=y)[0] +  # Transition y → y_next
+                    self.emission_score(X=X, pos_seq=pos_seq, t=t+1, T=T, y=y_next, y_=None)  # Emission score
+                    for y_next in self.all_NER_tags
+                ])
+
+        # Sum over all BOS → y transitions to compute log Z(X)
+        log_Z = np.logaddexp.reduce([
+            dp[0][self.ner_dict[y]] + self.transition_score(y=y, t=0, T=T) + 
+            self.emission_score(X=X, pos_seq=pos_seq, t=0, T=T, y=y, y_=None)
+            for y in self.all_NER_tags
+        ])
+
+        return dp
+
     
     # def nll(self, W, X_train: List[List[str]], pos_train: List[List[str]], Y_train: List[List[str]], reg_lambda=0.1) -> float:
     #     """Negative Log-Likelihood with Parallel Processing"""
@@ -268,14 +331,16 @@ class LinearChainCRF:
 
             # Compute sequence score
             seq_score = self.score_seq(X, pos_seq, Y)
-            log_partition = self.forward_partition(X, pos_seq)
+            log_partition = self.forward_partition(X, pos_seq)[0]
 
-            # Adjust 'O' and entity label influence
-            for label in Y:
-                if label == "O":
-                    seq_score += O_penalty  # Reduce 'O' impact
-                else:
-                    seq_score *= entity_boost  # Boost entity learning
+            
+
+            # # Adjust 'O' and entity label influence
+            # for label in Y:
+            #     if label == "O":
+            #         seq_score *= O_penalty  # Reduce 'O' impact
+            #     else:
+            #         seq_score *= entity_boost  # Boost entity learning
 
             return seq_score - log_partition
 
@@ -291,6 +356,32 @@ class LinearChainCRF:
         n = self.num_ner
         num_trans_wts = n**2 + 2*n
         return (-sum(ll_values) / N) + reg_lambda * np.sum(self.weights**2)
+    
+    def expected_feature_counts(self, X, pos_seq):
+        """Computes expected feature counts using model probabilities."""
+        feature_vector = np.zeros_like(self.weights)
+        T = len(X)  # Sequence length
+
+        # Compute forward and backward probabilities
+        log_Z, alpha = self.forward_partition(X, pos_seq)  # Forward probabilities
+        beta = self.backward_partition(X, pos_seq)  # Backward probabilities
+
+        for t in range(T):
+            for y in range(self.num_labels):
+                # Compute state feature expectations
+                state_features = self.make_features(Y=[], X=X, pos_seq=pos_seq, t=t, T=T, y=y)
+                marginal_prob = np.exp(alpha[t][y] + beta[t][y] - log_Z)  # P(y_t | X)
+                feature_vector[:len(state_features)] += marginal_prob * state_features  # Weighted sum
+
+                # Compute transition feature expectations (except first word)
+                if t > 0:
+                    for y_prev in range(self.num_labels):
+                        trans_idx = y_prev * self.num_labels + y
+                        trans_prob = np.exp(alpha[t-1, y_prev] + self.weights[len(state_features) + trans_idx] + beta[t, y] - Z)
+                        feature_vector[len(state_features) + trans_idx] += trans_prob  # Update transition counts
+
+        return feature_vector
+
 
     def compute_gradient(self, W, X_train, pos_train, Y_train, reg_lambda=0.5):
         """Computes the gradient of the Negative Log-Likelihood (Jacobian)"""
@@ -301,9 +392,10 @@ class LinearChainCRF:
         def compute_per_sequence_gradient(i):
             """Computes the gradient for a single training sequence"""
             X, pos_seq, Y = X_train[i], pos_train[i], Y_train[i]
+            T = len(X)
 
             # Compute feature expectations
-            observed_features = self.feature_counts(X, pos_seq, Y)
+            observed_features = np.sum([self.make_features(Y, X, pos_seq, t, T) for t in range(T)])
             expected_features = self.expected_feature_counts(X, pos_seq)
 
             # Compute per-sequence gradient
@@ -348,6 +440,7 @@ class LinearChainCRF:
 
         if not train: 
             print(f'not training')
+            plot_weights(self.weights, self.num_ner, self.num_pos, len(self.obs_funcs), self.all_NER_tags, self.all_POS, self.obs_feat_names)
             return
 
         # plt.hist(self.weights, bins=10, edgecolor='black', alpha=0.7)
@@ -373,6 +466,8 @@ class LinearChainCRF:
         # print(X_train)
         # print(pos_train)
         # print(Y_train)
+        self.class_weights = compute_class_weights(Y_train)
+        print(self.class_weights)
 
         """ Train using L-BFGS optimizer """
         self.X_train = X_train
@@ -401,10 +496,12 @@ class LinearChainCRF:
         #                   method='L-BFGS-B', callback=self.callback_function, options={'disp': True, 'maxiter':maxiter})
         # self.weights = result.x  # Update model parameters
         print(self.weights)
+        plot_weights(self.weights, self.num_ner, self.num_pos, len(self.obs_funcs), self.all_NER_tags, self.all_POS, self.obs_feat_names)
 
 
     def fit(self, filename:str, numlines:int=None, batchsize:int=None, show_tqdm:bool=False, maxiter:int=10, train:bool=True) -> None:
         self.parse_train(filename=filename, numlines=numlines)
+        
         # self.build_id_funcs()
         # self.build_feature_funcs()
         # self.build_dataframe()
