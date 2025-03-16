@@ -100,15 +100,19 @@ class LinearChainCRF:
 
         if t < T:
 
-            em_wts = self.weights[n2 + 2*n + p :]
+            em_wts = self.weights[n2 + 2*n + n*p :]
 
+            if y is None:
+                y = Y[t]
             args = (X[t], pos_seq[t], t, T, y, y_)
             em_feats = [f(*args) for f in self.obs_funcs]
 
             # print(f'\tt=\t{t}, em_feats={em_feats}')
         
-            # score from only POS
-            em += self.weights[n2 + 2*n + self.pos_dict[pos_seq[t]]] # for current pos -> right now, not conditioned on y
+            # score from only POS emission
+            i = self.pos_dict[pos_seq[t]]
+            j = self.ner_dict[y]
+            em += self.weights[n2 + 2*n + i*n + j] # for current pos -> conditioned on y
 
             # # loopify this pls
             # curr_token = X[t]
@@ -422,10 +426,10 @@ class LinearChainCRF:
 
         # initialize weights
 
-        self.num_feats = (self.num_ner)**2 + 2*(self.num_ner) + self.num_pos + len(self.obs_funcs)
+        self.num_feats = (self.num_ner)**2 + 2*(self.num_ner) + self.num_ner*self.num_pos + len(self.obs_funcs)
         # first set of weights is transition score/prob - [0, n*n-1]
         # second set of weights is transition from BOS to NER tags, and NER tags to EOS - [n*n, n*n + 2n - 1]
-        # third set of weights is for current POS tag - [n*n + 2n, n*n + 2n + p - 1]
+        # third set of weights is for current POS tag being emitted from NER label y - [n*n + 2n, n*n + 2n + p - 1]
         # fourth set of wights is for miscellaneous obs funcs - [n*n + 2n + p, n*n + 2n + p + o - 1]
         mu = 0.0
         sigma = 0.01

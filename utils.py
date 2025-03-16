@@ -87,10 +87,11 @@ import matplotlib.pyplot as plt
 def plot_weights(W, n, p, o, ner_list, pos_list, obs_funcs):
     # Ensure correct indexing of W
     n2 = n * n
+    n_p = n*p
     matrix_part = np.reshape(W[:n2], (n, n))  # Reshape properly
     extra_rows = np.reshape(W[n2:n2 + 2 * n], (2, n))  # Reshape properly
-    p_array = np.reshape(W[n2 + 2 * n: n2 + 2 * n + p], (1, p))  # Ensure it’s 2D
-    o_list = np.reshape(W[n2 + 2 * n + p:], (1, o))  # Ensure it’s 2D
+    p_array = np.reshape(W[n2 + 2 * n: n2 + 2 * n + n_p], (p, n))  # Ensure it’s 2D
+    o_list = np.reshape(W[n2 + 2 * n + n_p:], (1, o))  # Ensure it’s 2D
 
     # Create a unified color scale for all parts
     all_values = np.concatenate([
@@ -102,45 +103,46 @@ def plot_weights(W, n, p, o, ner_list, pos_list, obs_funcs):
     vmin, vmax = np.min(all_values), np.max(all_values)
 
     # Create a new figure for the visualization
-    fig, axs = plt.subplots(4, 1, figsize=(6, 6), gridspec_kw={'height_ratios': [n, 2, 1, 1]})
+    fig, axs = plt.subplots(4, 1, figsize=(10, 7), gridspec_kw={'height_ratios': [n, 2, p, 1]})
     #Define common tick label styling
-    tick_label_fontsize = 8  # Smaller font
-    tick_label_rotation = 45  # Slanted labels
+    tick_label_fontsize = 6  # Smaller font
+    tick_label_rotation = 0  # Slanted labels
     # Plot the n x n matrix as a heatmap
     ax = axs[0]
     im1 = ax.imshow(matrix_part, cmap="viridis", aspect="auto")
-    ax.set_title("Transition matrix")
+    ax.set_title("Transition matrix", fontsize=tick_label_fontsize)
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
     ax.set_xticklabels(ner_list, fontsize=tick_label_fontsize, rotation=tick_label_rotation)
-    ax.set_yticklabels(ner_list, fontsize=tick_label_fontsize, rotation=tick_label_rotation)
+    ax.set_yticklabels(ner_list, fontsize=tick_label_fontsize)
     fig.colorbar(im1, ax=ax, orientation="vertical")
 
     # Plot the extra rows as a heatmap
     ax = axs[1]
     im2 = ax.imshow(extra_rows, cmap="viridis", aspect="auto")
-    ax.set_title("Special transitions")
+    ax.set_title("Special transitions", fontsize=tick_label_fontsize)
     ax.set_xticks(range(n))
     ax.set_yticks(range(2))
     ax.set_xticklabels(ner_list, fontsize=tick_label_fontsize, rotation=tick_label_rotation)
-    ax.set_yticklabels(["From BOS", "To EOS"])
+    ax.set_yticklabels(["From BOS", "To EOS"], fontsize=tick_label_fontsize)
     fig.colorbar(im2, ax=ax, orientation="vertical")
 
     # Plot the list p as a row matrix heatmap
     ax = axs[2]
     im3 = ax.imshow(p_array, cmap="viridis", aspect="auto", vmin=vmin, vmax=vmax)
-    ax.set_title("POS")
-    ax.set_xticks(range(p))
-    ax.set_yticks([0])
-    ax.set_xticklabels(pos_list, fontsize=tick_label_fontsize, rotation=tick_label_rotation)
+    ax.set_title("POS emission", fontsize=tick_label_fontsize)
+    ax.set_yticks(range(p))
+    ax.set_xticks(range(n))
+    ax.set_xticklabels(ner_list, fontsize=tick_label_fontsize, rotation=tick_label_rotation)
+    ax.set_yticklabels(pos_list, fontsize=tick_label_fontsize)
     fig.colorbar(im3, ax=ax, orientation="vertical")
 
     # Plot the list of size o as a row matrix heatmap
     ax = axs[3]
     im4 = ax.imshow(o_list, cmap="viridis", aspect="auto", vmin=vmin, vmax=vmax)
-    ax.set_title("Observation functions")
+    ax.set_title("Observation functions", fontsize=tick_label_fontsize)
     ax.set_xticks(range(o))
-    ax.set_yticks([0])
+    # ax.set_yticks([0])
     ax.set_xticklabels(obs_funcs)
     fig.colorbar(im4, ax=ax, orientation="vertical")
 
