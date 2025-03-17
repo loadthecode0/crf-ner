@@ -105,20 +105,11 @@ class LinearChainCRF:
             if y is None:
                 y = Y[t]
             args = (X[t], pos_seq[t], t, T, y, y_)
-            em_feats = [f(*args) for f in self.obs_funcs]
-
-            # print(f'\tt=\t{t}, em_feats={em_feats}')
-        
+            em_feats = [float(f(*args)) for f in self.obs_funcs]
             # score from only POS emission
             i = self.pos_dict[pos_seq[t]]
             j = self.ner_dict[y]
             em += self.weights[n2 + 2*n + i*n + j] # for current pos -> conditioned on y
-
-            # # loopify this pls
-            # curr_token = X[t]
-            # em += self.weights[n2 + 2*n + p + 0]*self.obs_funcs[0](curr_token)
-            # em += self.weights[n2 + 2*n + p + 1]*self.obs_funcs[1](curr_token)
-
             # score from other obs functions
             em += np.dot(em_wts, em_feats)
 
@@ -156,7 +147,7 @@ class LinearChainCRF:
 
         return base
 
-    def make_features(self, Y:List[str], X:List[str], pos_seq:List[str], t:int, T:int, y:str=None, y_:str=None):
+    def make_features(self, X:List[str], pos_seq:List[str], t:int, T:int, Y:List[str]=None, y:str=None, y_:str=None):
         """
         Inputs:
             y : str       -> current label, y_t (hidden state)
@@ -190,14 +181,14 @@ class LinearChainCRF:
             feats[self.ner_dict[y] + n*self.ner_dict[y_]] = 1.0 #for transition score
         
         if t < T: #pos tag only for valid timesteps, otherwise index error
-            feats[n2 + 2*n + self.pos_dict[pos_seq[t]]] = 1.0 # for current pos
-
-            # loopify this pls
-            curr_token = X[t]
-            feats[n2 + 2*n + p + 0] = self.obs_funcs[0](curr_token)
-            feats[n2 + 2*n + p + 1] = self.obs_funcs[1](curr_token)
-
-        # print(feats)
+            args = (X[t], pos_seq[t], t, T, y, y_)
+            em_feats = [f(*args) for f in self.obs_funcs]
+            # score from only POS emission
+            i = self.pos_dict[pos_seq[t]]
+            j = self.ner_dict[y]
+            feats[n2 + 2*n + i*n + j] = 1.0# for current pos -> conditioned on y
+            # score from other obs functions
+            feats[n2 + 2*n + n*p :] = em_feats
 
         return feats
 
@@ -366,17 +357,69 @@ class LinearChainCRF:
         """Computes expected feature counts using model probabilities."""
         feature_vector = np.zeros_like(self.weights)
         T = len(X)  # Sequence length
+        n = self.num_ner
+        n2 = n**2
+        p = self.num_pos
+        n_p = n*p
 
         # Compute forward and backward probabilities
         log_Z, alpha = self.forward_partition(X, pos_seq)  # Forward probabilities
         beta = self.backward_partition(X, pos_seq)  # Backward probabilities
 
+        T = len(X)
+        n = self.num_ner
+        n2 = n**2
+        p = self.num_pos
+        o = len(self.obs_funcs)
+        n_p = n*p
+
+        dp = np.zeros((T+1, n+1)) 
+
+        for y in self.all_NER_tags:
+            j = self.ner_dict[y] # get index of curr NER label
+            # only BOS -> y transitions, no need to consider logaddexp
+            feature_vector[j + n2] = (
+                self.transition_score(y=y, t=0, T=T) + 
+                self.emission_score(X=X, pos_seq=pos_seq, t=0, T=T, y=y, y_=None) +
+                beta[t, j] - 
+                log_Z
+            )
+
+        for t in range(1, T): # goes till T-1, ie before EOS
+            for y in self.all_NER_tags:
+                j = self.ner_dict[y]
+                for y_ in self.all_NER_tags:
+                    j_ = self.ner_dict[y_]
+
+                feature_vector[j + n*j_] = \
+                np.exp(
+                    alpha[t-1][j_] + 
+                    self.transition_score(t=t, T=T, y=y, y_=y_) + 
+                    self.emission_score(X=X, pos_seq=pos_seq, t=t, T=T, y=y, y_=None) +
+                    beta[t][j] - 
+                    log_Z
+                )
+
+        #nth label = EOS (y_ -> EOS)
+        dp[T][n] = np.logaddexp.reduce([
+            dp[T-1][self.ner_dict[y_]] + \
+            self.transition_score(t=T, T=T, y_=y_) 
+            for y_ in self.all_NER_tags ])
+
+
+
+
         for t in range(T):
             for y in range(self.num_labels):
                 # Compute state feature expectations
-                state_features = self.make_features(Y=[], X=X, pos_seq=pos_seq, t=t, T=T, y=y)
+                args = (X[t], pos_seq[t], t, T, y, None)
+                state_features = [f(*args) for f in self.obs_funcs]
                 marginal_prob = np.exp(alpha[t][y] + beta[t][y] - log_Z)  # P(y_t | X)
-                feature_vector[:len(state_features)] += marginal_prob * state_features  # Weighted sum
+                feature_vector[n2 + 2*n + n_p :] += marginal_prob * state_features  # Weighted sum
+                # score from only POS emission
+                i = self.pos_dict[pos_seq[t]]
+                j = self.ner_dict[y]
+                feature_vector[n2 + 2*n + i*n + j] = marginal_prob# for current pos -> conditioned on y
 
                 # Compute transition feature expectations (except first word)
                 if t > 0:
@@ -619,9 +662,19 @@ class LinearChainCRF:
             recall[label] = tp / (tp + fn) if (tp + fn) > 0 else 0
             f1_score[label] = (2 * precision[label] * recall[label]) / (precision[label] + recall[label]) if (precision[label] + recall[label]) > 0 else 0
         
+        all_tp = sum(counts['TP'] for counts in label_counts.values())
+        all_fp = sum(counts['FP'] for counts in label_counts.values())
+        all_fn = sum(counts['FN'] for counts in label_counts.values())
+        print(all_tp, all_fp, all_fn)
         accuracy = sum(counts['TP'] for counts in label_counts.values()) / len(Y_test)
+        precision_all = all_tp / (all_tp + all_fp) if (all_tp + all_fp) > 0 else 0
+        recall_all = all_tp / (all_tp + all_fn) if (all_tp + all_fn) > 0 else 0
+        f1_score_all = (2 * precision_all * recall_all) / (precision_all + recall_all) if (precision_all + recall_all) > 0 else 0
         
         print(f"Accuracy: {accuracy:.4f}")
+        print(f"Precision: {precision_all:.4f}")
+        print(f"Recall: {recall_all:.4f}")
+        print(f"F1-Score: {f1_score_all:.4f}")
         print("Label-wise Precision, Recall, F1-Score:")
         for label in unique_labels:
             print(f"Label: {label}, Precision: {precision[label]:.4f}, Recall: {recall[label]:.4f}, F1-Score: {f1_score[label]:.4f}")
