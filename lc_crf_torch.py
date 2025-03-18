@@ -7,6 +7,8 @@ from joblib import Parallel, delayed
 import pickle
 import datetime
 from utils import *
+from torch.utils.data import DataLoader, TensorDataset
+
 
 class LinearChainCRF(nn.Module):
     def __init__(self):
@@ -37,6 +39,9 @@ class LinearChainCRF(nn.Module):
         # Placeholder for class weights
         self.class_weights = {}
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+
     def parse_train(self, filename: str, numlines=None):
         parsed_data, all_NER_tags, all_POS = parse(filename, numlines)
         self.all_NER_tags = all_NER_tags
@@ -58,11 +63,11 @@ class LinearChainCRF(nn.Module):
         num_observations = len(self.obs_funcs)
         
         self.num_feats = num_transitions + num_emissions + num_observations
-        self.weights = nn.Parameter(torch.randn(self.num_feats) * 0.01)  # Small random values
+        self.weights = nn.Parameter(torch.randn(self.num_feats, device=self.device) * 0.01)  # Move to GPU
 
     def emission_score(self, Y:List[str]=None, X:List[str]=None, pos_seq:List[str]=None, t:int=None, T:int=None, y:str=None, y_:str=None):
         """Computes emission score using torch operations."""
-        em = 0.0
+        em = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         n = self.num_ner
         n2 = n ** 2
         p = self.num_pos
@@ -79,7 +84,8 @@ class LinearChainCRF(nn.Module):
 
             em_wts = self.weights[n2 + 2 * n + n * p :]
             args = (X[t], pos_seq[t], t, len(X), y, None)
-            em_feats = torch.tensor([f(*args) for f in self.obs_funcs], dtype=torch.float32)
+            em_feats = torch.tensor([f(*args) for f in self.obs_funcs], dtype=torch.float32, requires_grad=False)
+
             em += torch.dot(em_wts, em_feats)  # Other observation functions
 
         return em
@@ -97,11 +103,11 @@ class LinearChainCRF(nn.Module):
             y_ = Y[t-1]
 
         if t == 0:
-            base = self.weights[self.ner_dict[y] + n2]  # BOS -> y
+            base = self.weights[self.ner_dict[y] + n2] # BOS -> y
         elif t == T:
-            base = self.weights[self.ner_dict[y_] + n2 + n]  # y_ -> EOS
+            base = self.weights[self.ner_dict[y_] + n2 + n] # y_ -> EOS
         else:
-            base = self.weights[self.ner_dict[y] + n * self.ner_dict[y_]]  # General transition
+            base = self.weights[self.ner_dict[y] + n * self.ner_dict[y_]] # General transition
 
         if t < T:
             scale = self.class_weights.get(y, 1.0)
@@ -141,7 +147,7 @@ class LinearChainCRF(nn.Module):
         
         T = len(X)
         n = self.num_ner
-        dp = torch.full((T + 1, n + 1), -float('inf'))  # Log-space DP table
+        dp = torch.full((T + 1, n + 1), -float('inf'), device=self.device)  # Move DP table to GPU
 
         # try: # when y, y_ are not given explicity
         #     if y == None and t<T : 
@@ -182,10 +188,10 @@ class LinearChainCRF(nn.Module):
             reg_lambda=0.5, O_penalty=0.75, entity_boost=1.5):
         """Computes the Negative Log-Likelihood (NLL) loss function."""
         
-        loss = 0.0
+        loss = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         for X, pos_seq, Y in tqdm(zip(X_train, pos_train, Y_train)):
-            score = self.score_seq(X, pos_seq, Y)
-            log_Z = self.forward_partition(X, pos_seq)[0]
+            score = self.score_seq(X, pos_seq, Y).to(self.device)
+            log_Z = (self.forward_partition(X, pos_seq)[0]).to(self.device)
             loss += log_Z - score
 
         loss /= len(X_train)  # Normalize by number of examples
@@ -194,12 +200,20 @@ class LinearChainCRF(nn.Module):
 
     def train(self, use_class_wts=True, max_iter=100, train=True):
         """Trains the CRF model using L-BFGS optimizer."""
-        X_train = self.train_examples['Tokens'].tolist()
-        pos_train = self.train_examples['POS'].tolist()
-        Y_train = self.train_examples['NER_tags'].tolist()
+        X_train = [[word for word in sentence] for sentence in self.train_examples['Tokens'].tolist()]
+        pos_train = [[tag for tag in pos_seq] for pos_seq in self.train_examples['POS'].tolist()]
+        Y_train = [[tag for tag in labels] for labels in self.train_examples['NER_tags'].tolist()]
+
+        # # Move to GPU
+        # X_train = [[torch.tensor(word, device=self.device) for word in sentence] for sentence in X_train]
+        # pos_train = [[torch.tensor(tag, device=self.device) for tag in pos_seq] for pos_seq in pos_train]
+        # Y_train = [[torch.tensor(tag, device=self.device) for tag in labels] for labels in Y_train]
+
+
+
         if use_class_wts:
             self.class_weights = compute_class_weights(Y_train)
-        optimizer = optim.LBFGS([self.weights], lr=0.1, max_iter=20)
+        optimizer = optim.LBFGS([self.weights], lr=0.1, max_iter=5)
 
         def closure():
             optimizer.zero_grad()
@@ -230,8 +244,9 @@ class LinearChainCRF(nn.Module):
         """Decodes sequence using Viterbi algorithm."""
         T = len(obs)
         n = self.num_ner
-        dp = torch.full((T + 1, n + 1), -float('inf'))
-        trace = torch.zeros((T + 1, n + 1), dtype=torch.long, requires_grad=False)
+        dp = torch.full((T + 1, n + 1), -float('inf'), device=self.device)
+        trace = torch.zeros((T + 1, n + 1), dtype=torch.long, device=self.device)
+
 
         for y in self.all_NER_tags:
             j = self.ner_dict[y]
@@ -362,36 +377,37 @@ class LinearChainCRF(nn.Module):
         N = len(X_test)
 
         Y_pred = []
-        for i in range(N):
+        for i in tqdm(range(N)):
             y_pred = self.predict_viterbi(X_test[i], pos_test[i])
             Y_pred.append(y_pred)
 
             # Debugging step
-            print(f"Predicted: {y_pred}\nActual: {Y_test[i]}\n")
+            # print(f"Predicted: {y_pred}\nActual: {Y_test[i]}\n")
 
         # Evaluate predictions
         self.eval(Y_pred=Y_pred, Y_test=Y_test)
 
-    def save_crf_model(crf_model, extra: str):
-    
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"crf_{timestamp}_{extra}.pt"
+def save_crf_model(crf_model, extra: str):
 
-        torch.save(crf_model.state_dict(), filename)
-        print(f"CRF model saved to {filename}")
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"crf_{timestamp}_{extra}.pt"
 
-    def load_crf_model(model_class, filename: str):
-        model = model_class()
-        model.load_state_dict(torch.load(filename))
-        print(f"CRF model loaded from {filename}")
-        return model
+    torch.save(crf_model.state_dict(), filename, _use_new_zipfile_serialization=False)
+
+    print(f"CRF model saved to {filename}")
+
+def load_crf_model(model_class, filename: str):
+    model = model_class()
+    model.load_state_dict(torch.load(filename))
+    print(f"CRF model loaded from {filename}")
+    return model
 
 def test():
     print(end_ing('HiAll'))
     print(end_ing('yooooing'))
     c = LinearChainCRF()
-    c.fit('data/ner_train.csv', use_class_wts= True, numlines=None, show_tqdm=False, max_iter=10)
-    # save_crf_model(c, 'em_cond')
+    c.fit('data/ner_train.csv', use_class_wts= True, numlines=10, show_tqdm=False, max_iter=1)
+    # save_crf_model(c, '1000egs')
     # print(c.train_examples[28389])
     print(c.all_NER_tags)
     print(c.all_POS)
@@ -400,6 +416,6 @@ def test():
     print(c.pos_dict)
     print(c.ner_dict)
     # print(c.predict_viterbi(['Indian', 'troops', 'shot', 'dead', 'three', 'militants', 'in', 'Doda', 'district', 'Wednesday', '.'], ['JJ', 'NNS', 'VBD', 'JJ', 'CD', 'NNS', 'IN', 'NNP', 'NN', 'NNP', '.']))
-    c.eval_from_file('data/ner_test.csv', numlines=10)
+    c.eval_from_file('data/ner_test.csv', numlines=500)
 if __name__ == "__main__":
     test()

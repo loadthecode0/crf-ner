@@ -717,7 +717,7 @@ def test():
     print(end_ing('HiAll'))
     print(end_ing('yooooing'))
     c = LinearChainCRF()
-    c.fit('data/ner_train.csv', batchsize= 50, numlines=50, show_tqdm=False, maxiter=10)
+    c.fit('data/ner_train.csv', batchsize= 50, numlines=50, show_tqdm=False, maxiter=1)
     # save_crf_model(c, 'em_cond')
     # print(c.train_examples[28389])
     print(c.all_NER_tags)

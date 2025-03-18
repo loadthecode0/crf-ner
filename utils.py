@@ -88,6 +88,7 @@ def plot_weights(W, n, p, o, ner_list, pos_list, obs_funcs):
     # Ensure correct indexing of W
     n2 = n * n
     n_p = n*p
+    W = W.detach().numpy()
     matrix_part = np.reshape(W[:n2], (n, n))  # Reshape properly
     extra_rows = np.reshape(W[n2:n2 + 2 * n], (2, n))  # Reshape properly
     p_array = np.reshape(W[n2 + 2 * n: n2 + 2 * n + n_p], (p, n))  # Ensure it’s 2D
@@ -169,3 +170,41 @@ def compute_class_weights(Y_train, smoothing_factor=1.0):
     class_weights = {label: alpha*weight / max_weight for label, weight in raw_weights.items()}
 
     return class_weights
+
+from torch.utils.data import Dataset, DataLoader
+
+class CRFDataset(Dataset):
+    def __init__(self, X_train, pos_train, Y_train):
+        self.X_train = X_train
+        self.pos_train = pos_train
+        self.Y_train = Y_train
+
+    def __len__(self):
+        return len(self.X_train)
+
+    def __getitem__(self, idx):
+        return self.X_train[idx], self.pos_train[idx], self.Y_train[idx]
+    
+
+
+from torch.nn.utils.rnn import pad_sequence
+import torch
+
+def collate_fn(batch):
+    """
+    Custom collate function for handling variable-length sequences in a batch.
+    Pads sequences to the maximum length in the batch.
+    """
+    X_batch, pos_batch, Y_batch = zip(*batch)  # Unpack batch tuples
+
+    # Convert list of strings to tensors (word embeddings or indices)
+    X_batch = [torch.tensor([hash(w) % 10000 + 1 for w in X], dtype=torch.long) for X in X_batch]
+    pos_batch = [torch.tensor([hash(p) % 50 + 1 for p in pos], dtype=torch.long) for pos in pos_batch]
+    Y_batch = [torch.tensor([hash(y) % 20 + 1 for y in Y], dtype=torch.long) for Y in Y_batch]
+
+    # Pad all sequences to the longest in batch
+    X_batch_padded = pad_sequence(X_batch, batch_first=True, padding_value=0)
+    pos_batch_padded = pad_sequence(pos_batch, batch_first=True, padding_value=0)
+    Y_batch_padded = pad_sequence(Y_batch, batch_first=True, padding_value=0)
+
+    return X_batch_padded, pos_batch_padded, Y_batch_padded
