@@ -60,7 +60,7 @@ class LinearChainCRF(nn.Module):
         """Initialize learnable weights as a PyTorch tensor."""
         num_transitions = self.num_ner ** 2 + 2 * self.num_ner
         num_emissions = self.num_ner * self.num_pos
-        num_observations = len(self.obs_funcs)
+        num_observations = self.num_ner * len(self.obs_funcs)
         
         self.num_feats = num_transitions + num_emissions + num_observations
         self.weights = nn.Parameter(torch.randn(self.num_feats, device=self.device) * 0.01)  # Move to GPU
@@ -80,15 +80,17 @@ class LinearChainCRF(nn.Module):
                 y = Y[t]
             i = self.pos_dict[pos_seq[t]]
             j = self.ner_dict[y]
-            em += self.weights[n2 + 2 * n + i * n + j]  # POS emission
+            o = len(self.obs_funcs)
+            em += self.weights[n2 + 2*n + i*n + j]  # POS emission
 
-            em_wts = self.weights[n2 + 2 * n + n * p :]
+            em_wts = self.weights[n2 + 2*n + n*p + j*o : n2 + 2*n + n*p + j*o + o]
             args = (X[t], pos_seq[t], t, len(X), y, None)
+            # em_feats = torch.zeros((n, len(self.obs_funcs)), dtype=torch.float32, requires_grad=False)
             em_feats = torch.tensor([f(*args) for f in self.obs_funcs], dtype=torch.float32, requires_grad=False)
 
             em += torch.dot(em_wts, em_feats)  # Other observation functions
 
-        return em
+        return em * self.class_weights.get(y, 1.0)
 
     def transition_score(self, Y:List[str]=None, t:int=None, T:int=None, y:str=None, 
                          y_:str=None, O_penalty=0.5, entity_boost=1.5, reg_weight=4.0):
@@ -110,9 +112,11 @@ class LinearChainCRF(nn.Module):
             base = self.weights[self.ner_dict[y] + n * self.ner_dict[y_]] # General transition
 
         if t < T:
-            scale = self.class_weights.get(y, 1.0)
+            scale = self.class_weights.get(y_, 1.0) * self.class_weights.get(y, 1.0)
             # base *= self.class_weights.get(y, 1.0)
-
+            return base * scale
+        elif t==T :
+            scale = self.class_weights.get(y_, 1.0)
             return base * scale
         
         return base
@@ -185,7 +189,7 @@ class LinearChainCRF(nn.Module):
         return log_Z, dp
 
     def nll(self, X_train: List[List[str]], pos_train: List[List[str]], Y_train: List[List[str]], 
-            reg_lambda=0.5, O_penalty=0.75, entity_boost=1.5):
+            reg_lambda=0.0, O_penalty=0.75, entity_boost=1.5):
         """Computes the Negative Log-Likelihood (NLL) loss function."""
         
         loss = torch.tensor(0.0, dtype=torch.float32, device=self.device)
@@ -195,8 +199,8 @@ class LinearChainCRF(nn.Module):
             loss += log_Z - score
 
         loss /= len(X_train)  # Normalize by number of examples
-        loss += reg_lambda * torch.norm(self.weights, p=2)  # L2 regularization
-        return loss
+        # loss += reg_lambda * torch.norm(self.weights, p=2)  # L2 regularization
+        return loss 
 
     def train(self, use_class_wts=True, max_iter=100, train=True):
         """Trains the CRF model using L-BFGS optimizer."""
@@ -213,7 +217,7 @@ class LinearChainCRF(nn.Module):
 
         if use_class_wts:
             self.class_weights = compute_class_weights(Y_train)
-        optimizer = optim.LBFGS([self.weights], lr=0.1, max_iter=5)
+        optimizer = optim.LBFGS([self.weights], lr=0.1, max_iter=10)
 
         def closure():
             optimizer.zero_grad()
@@ -406,7 +410,7 @@ def test():
     print(end_ing('HiAll'))
     print(end_ing('yooooing'))
     c = LinearChainCRF()
-    c.fit('data/ner_train.csv', use_class_wts= True, numlines=10, show_tqdm=False, max_iter=1)
+    c.fit('data/ner_train.csv', use_class_wts= True, numlines=100, show_tqdm=False, max_iter=3)
     # save_crf_model(c, '1000egs')
     # print(c.train_examples[28389])
     print(c.all_NER_tags)

@@ -92,7 +92,7 @@ def plot_weights(W, n, p, o, ner_list, pos_list, obs_funcs):
     matrix_part = np.reshape(W[:n2], (n, n))  # Reshape properly
     extra_rows = np.reshape(W[n2:n2 + 2 * n], (2, n))  # Reshape properly
     p_array = np.reshape(W[n2 + 2 * n: n2 + 2 * n + n_p], (p, n))  # Ensure it’s 2D
-    o_list = np.reshape(W[n2 + 2 * n + n_p:], (1, o))  # Ensure it’s 2D
+    o_list = np.transpose(np.reshape(W[n2 + 2 * n + n_p:], (n, o)))  # Ensure it’s 2D
 
     # Create a unified color scale for all parts
     all_values = np.concatenate([
@@ -104,7 +104,7 @@ def plot_weights(W, n, p, o, ner_list, pos_list, obs_funcs):
     vmin, vmax = np.min(all_values), np.max(all_values)
 
     # Create a new figure for the visualization
-    fig, axs = plt.subplots(4, 1, figsize=(10, 7), gridspec_kw={'height_ratios': [n, 2, p, 1]})
+    fig, axs = plt.subplots(4, 1, figsize=(10, 7), gridspec_kw={'height_ratios': [n, 2, p, o]})
     #Define common tick label styling
     tick_label_fontsize = 6  # Smaller font
     tick_label_rotation = 0  # Slanted labels
@@ -142,9 +142,13 @@ def plot_weights(W, n, p, o, ner_list, pos_list, obs_funcs):
     ax = axs[3]
     im4 = ax.imshow(o_list, cmap="viridis", aspect="auto", vmin=vmin, vmax=vmax)
     ax.set_title("Observation functions", fontsize=tick_label_fontsize)
-    ax.set_xticks(range(o))
+    # ax.set_xticks(range(o))
+    ax.set_yticks(range(o))
+    ax.set_xticks(range(n))
     # ax.set_yticks([0])
-    ax.set_xticklabels(obs_funcs)
+    # ax.set_xticklabels(obs_funcs)
+    ax.set_xticklabels(ner_list, fontsize=tick_label_fontsize, rotation=tick_label_rotation)
+    ax.set_yticklabels(obs_funcs, fontsize=tick_label_fontsize)
     fig.colorbar(im4, ax=ax, orientation="vertical")
 
     # Show the updated visualization
@@ -153,7 +157,7 @@ def plot_weights(W, n, p, o, ner_list, pos_list, obs_funcs):
 
 
 
-def compute_class_weights(Y_train, smoothing_factor=1.0):
+def compute_class_weights(Y_train, smoothing_factor=5.0):
     """Computes smoothed class weights and normalizes so that the highest weight is 1."""
     label_counts = Counter(label for sentence in Y_train for label in sentence)
     total_labels = sum(label_counts.values())
@@ -161,6 +165,7 @@ def compute_class_weights(Y_train, smoothing_factor=1.0):
     # Compute raw class weights
     raw_weights = {
         label: np.log(1 + smoothing_factor * (total_labels / count))
+        # label:  (total_labels / count)
         for label, count in label_counts.items()
     }
 

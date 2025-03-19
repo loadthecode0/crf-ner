@@ -144,6 +144,8 @@ class LinearChainCRF:
         #     base -= reg_weight * np.log(entity_boost)  # Encourage O->Entity transitions
         if t<T:
             base *= self.class_weights[y]
+        elif t==T 
+            base *= self.class_weights[y_]
 
         return base
 
