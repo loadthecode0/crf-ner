@@ -1,5 +1,12 @@
 *.pkl
 scratch.py
+test/
+n10000/
+n10000final/
+*.pkl
+lc_crf_torch_nocap.py
+eval.py
+testing_final.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
